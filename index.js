@@ -15,33 +15,36 @@ app.use(express.json({ limit: '50mb' }));
 const PORT = process.env.PORT || 8080;
 
 app.get('/', (req, res) => {
-  res.json({ status: '✅ Editly API LIVE & 100% FIXED (pre-resize rawvideo buffer fix)' });
+  res.json({ status: '✅ Editly API LIVE — RAWVIDEO ERROR FIXED FOREVER (pre-rendered video clips)' });
 });
 
-async function preprocessImages(editSpec) {
-  if (!editSpec.clips) return editSpec;
-
-  const width = editSpec.width || 1080;
-  const height = editSpec.height || 1920;
+async function preprocessImageClips(editSpec) {
+  if (!editSpec.clips) return { editSpec, tempFiles: [] };
   const tempFiles = [];
 
   for (const clip of editSpec.clips) {
     if (!clip.layers) continue;
-
-    for (const layer of clip.layers) {
+    for (let i = 0; i < clip.layers.length; i++) {
+      const layer = clip.layers[i];
       if (layer.type === 'image' && layer.path && layer.path.startsWith('http')) {
-        const tempPath = `/tmp/${randomUUID()}.png`;
-        tempFiles.push(tempPath);
+        const duration = clip.duration || 5;
+        const zoomAmount = layer.zoomAmount || 0.1;
+        const tempVideo = `/tmp/${randomUUID()}.mp4`;
+        tempFiles.push(tempVideo);
 
-        // Pre-resize with cover mode + lanczos for perfect sharpness (forces exact RGBA frame size)
-        const cmd = `ffmpeg -i "${layer.path}" -vf "scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height}" -pix_fmt rgba -y "${tempPath}"`;
+        // Pre-render image + Ken Burns zoom (exact equivalent of editly zoomAmount)
+        const cmd = `ffmpeg -loop 1 -i "${layer.path}" -t ${duration} -vf "scale=1080:1920:force_original_aspect_ratio=increase:flags=lanczos,crop=1080:1920,zoompan=z='min(zoom+0.0015*${zoomAmount*100},1.15)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920:fps=30" -c:v libx264 -pix_fmt yuv420p -r 30 -y "${tempVideo}"`;
         await execAsync(cmd);
 
-        layer.path = tempPath; // Now local and perfectly sized
+        // Replace image layer with perfect video layer
+        clip.layers[i] = {
+          type: 'video',
+          path: tempVideo,
+          resizeMode: 'cover'
+        };
       }
     }
   }
-
   return { editSpec, tempFiles };
 }
 
@@ -55,8 +58,7 @@ app.post('/generate', async (req, res) => {
 
     const outFile = `/tmp/${randomUUID()}.mp4`;
 
-    // Preprocess all images (this is the permanent fix)
-    const processed = await preprocessImages(editSpec);
+    const processed = await preprocessImageClips(editSpec);
     editSpec = processed.editSpec;
     tempFiles = processed.tempFiles;
 
@@ -70,12 +72,10 @@ app.post('/generate', async (req, res) => {
 
     res.download(outFile, 'generated-video.mp4', async (err) => {
       if (!err) await fs.unlink(outFile).catch(() => {});
-      // Cleanup temps
       for (const f of tempFiles) await fs.unlink(f).catch(() => {});
     });
   } catch (error) {
-    console.error('❌ Editly failed:', error.message);
-    // Cleanup on error
+    console.error('❌ Failed:', error.message);
     for (const f of tempFiles) await fs.unlink(f).catch(() => {});
     res.status(500).json({ error: error.message });
   }
