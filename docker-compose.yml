@@ -1,0 +1,76 @@
+# ═══════════════════════════════════════════════════════════════════
+# docker-compose.yml — n8n + FFmpeg for 1 CPU / 2 GB RAM
+# Use this for local testing. On CloudStation/Railway, use only
+# the Dockerfile and set environment variables via their dashboard.
+# ═══════════════════════════════════════════════════════════════════
+
+version: '3.8'
+
+services:
+  n8n:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+
+    # ── Resource limits ─────────────────────────────────────────
+    # Hard cap: prevents Docker from letting this container OOM the host
+    # memory: 1800m leaves 200MB for OS when running on 2GB host
+    # cpus: 1.0 = use at most 1 full CPU core (matches CloudStation tier)
+    deploy:
+      resources:
+        limits:
+          memory: 1800m
+          cpus: '1.0'
+        reservations:
+          memory: 256m
+
+    # ── Volume mounts ───────────────────────────────────────────
+    volumes:
+      # Persistent n8n data: workflows, credentials, execution history
+      - n8n_data:/home/node/.n8n
+      # Persistent /tmp for workflow intermediates
+      # Without this, /tmp resets on container restart mid-workflow
+      - sfcm_tmp:/tmp/sfcm
+
+    # ── Environment variables ───────────────────────────────────
+    # These supplement the ENV vars in the Dockerfile
+    environment:
+      # REQUIRED: Set your own encryption key — do not use this default
+      # Generate with: openssl rand -hex 32
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-change-this-to-a-random-32-char-string}
+
+      # Webhook URL — set to your CloudStation/Railway public URL
+      # Example: https://your-app.up.railway.app
+      - WEBHOOK_URL=${WEBHOOK_URL:-http://localhost:5678}
+      - N8N_HOST=${N8N_HOST:-localhost}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=${N8N_PROTOCOL:-http}
+
+      # Optional: basic auth to protect your n8n instance
+      # - N8N_BASIC_AUTH_ACTIVE=true
+      # - N8N_BASIC_AUTH_USER=admin
+      # - N8N_BASIC_AUTH_PASSWORD=your-secure-password
+
+      # Timezone — important for cron triggers (your 10-min poll)
+      - GENERIC_TIMEZONE=${TIMEZONE:-Asia/Karachi}
+      - TZ=${TIMEZONE:-Asia/Karachi}
+
+      # Node heap limit — repeated here to ensure it's set
+      # even if Dockerfile ENV is overridden
+      - NODE_OPTIONS=--max-old-space-size=512
+
+    # ── Tmpfs for ephemeral script files ────────────────────────
+    # The .sh scripts we write and execute are tiny (<100KB).
+    # Keeping them in memory avoids disk I/O for script creation.
+    # Size: 100m is more than enough for our scripts
+    tmpfs:
+      - /tmp/scripts:size=100m,mode=1777
+
+volumes:
+  n8n_data:
+    driver: local
+  sfcm_tmp:
+    driver: local
